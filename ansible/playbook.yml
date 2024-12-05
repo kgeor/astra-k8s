@@ -28,18 +28,18 @@
 
   tasks:
     - name: Disable swap
-      shell: |
+      ansible.builtin.shell: |
         swapoff -a
       when: ansible_swaptotal_mb > 0
 
     - name: Disable swap mounting in fstab
-      replace:
+      ansible.builtin.replace:
         path: /etc/fstab
         regexp: '(^/.*swap.*)' #'^([^#].*?\sswap\s+sw\s+.*)$'
         replace: '#\1'
 
     - name: Add auto load  for kernel modules needed by containerd
-      blockinfile:
+      ansible.builtin.blockinfile:
         path: /etc/modules-load.d/containerd.conf
         create: true
         block: |
@@ -47,7 +47,7 @@
           br_netfilter
 
     - name: Load this kernel modules immediately
-      modprobe:
+      community.general.modprobe:
         name: "{{ item }}"
         state: present
       loop:
@@ -68,7 +68,7 @@
         - { key: 'net.bridge.bridge-nf-call-ip6tables', value: '1' }
 
     - name: Install required packages
-      apt:
+      ansible.builtin.apt:
         name: "{{ item }}"
         state: present
         update_cache: true
@@ -82,14 +82,14 @@
         - bash-completion
 
     - name: Add Docker repo key
-      get_url:
+      ansible.builtin.get_url:
         url: https://download.docker.com/linux/debian/gpg
         dest: /etc/apt/keyrings/docker-apt-keyring.asc
         mode: "0644"
         force: true
 
     - name: Add Docker APT repo
-      apt_repository:
+      ansible.builtin.apt_repository:
         repo: "deb [arch={{ 'amd64' if ansible_architecture == 'x86_64' else 'arm64' }} signed-by=/etc/apt/keyrings/docker-apt-keyring.asc] https://download.docker.com/linux/{{ os_release }} stable"
         state: present
         update_cache: yes
@@ -100,7 +100,7 @@
         state: present
 
     - name: Enable the containerd service
-      service:
+      ansible.builtin.service:
         name: containerd 
         enabled: yes
 
@@ -109,12 +109,12 @@
     #     prompt: Press RETURN when you want to continue 
 
     - name: Create default containerd configuration
-      shell: |
+      ansible.builtin.shell: |
         set -euo pipefail
         /usr/bin/containerd config default | tee /etc/containerd/config.toml
 
     - name: Customize created containerd configuration
-      replace:
+      ansible.builtin.replace:
         path: /etc/containerd/config.toml
         regexp: "{{ item.old }}"
         replace: "{{ item.new }}"
@@ -126,20 +126,20 @@
         - restart containerd
     
     - name: Add Kubernetes repo apt-key
-      get_url:
+      ansible.builtin.get_url:
         url: "https://pkgs.k8s.io/core:/stable:/v{{ k8s_version }}/deb/Release.key"
         dest: /etc/apt/keyrings/kubernetes-apt-keyring.asc
         mode: "0644"
         force: true
 
     - name: Add Kubernetes APT repository
-      apt_repository:
+      ansible.builtin.apt_repository:
         repo: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.asc] https://pkgs.k8s.io/core:/stable:/v{{ k8s_version }}/deb/ /"
         state: present
         update_cache: yes
 
     - name: Install k8s packages
-      apt:
+      ansible.builtin.apt:
         name: "{{ item }}"
         state: present
         update_cache: true
@@ -149,7 +149,7 @@
         - "kubeadm={{ k8s_version }}.*"
 
     - name: Hold k8s pkgs to update
-      dpkg_selections:
+      ansible.builtin.dpkg_selections:
         name: "{{ item }}"
         selection: hold
       loop:
@@ -160,7 +160,7 @@
         - restart kubelet
 
     - name: Enable the Kubelet service
-      service:
+      ansible.builtin.service:
         name: kubelet
         enabled: yes
 
@@ -170,7 +170,7 @@
     - name: Configure master node
       block:
       - name: Create k8s cluster init config for kubeadm
-        blockinfile:
+        ansible.builtin.blockinfile:
           path: /etc/kubernetes/kubeadm-config.yaml
           create: true
           block: |
@@ -198,14 +198,14 @@
             mode: "ipvs" #iptables - default
 
       - name: Create ~/k8s directory for user on master node
-        file:
+        ansible.builtin.file:
           path: "/home/{{ ansible_user }}/k8s"
           state: directory
           owner: "{{ ansible_user }}"
           group: "{{ ansible_user }}"
           #mode: 0755
       - name: Create tigera operator customization
-        blockinfile:
+        ansible.builtin.blockinfile:
           path: "/home/{{ ansible_user }}/k8s/calico.yaml"
           create: true
           owner: "{{ ansible_user }}"
@@ -221,12 +221,12 @@
                   - cidr: 10.244.0.0/16
 
       - name: Setup kubectl autocomplete
-        shell: kubectl completion bash > /etc/bash_completion.d/kubectl   
+        ansible.builtin.shell: kubectl completion bash > /etc/bash_completion.d/kubectl   
       
       when: inventory_hostname in groups['masters']
 
     - name: Add NetworkManager config for Calico-managed interfaces
-      blockinfile:
+      ansible.builtin.blockinfile:
         path: /etc/NetworkManager/conf.d/calico.conf
         create: true
         block: |
@@ -238,18 +238,18 @@
 
   handlers:
     - name: restart containerd
-      systemd:
+      ansible.builtin.service:
         name: containerd
         state: restarted
         daemon-reload: yes
 
     - name: restart NetworkManager
-      systemd:
+      ansible.builtin.service:
         name: NetworkManager
         state: restarted
 
     - name: restart kubelet
-      service:
+      ansible.builtin.service:
         name: kubelet
         state: restarted
 
@@ -257,12 +257,10 @@
 - name: Setup NFS server on Ansible host server
   hosts: localhost
   become: true
-  #vars:
-    #dns_ip: "{{ hostvars['server.dns.lab']['ansible_facts']['server_ip'] }}"
 
   tasks:
     - name: Install NFSv4 server
-      apt:
+      ansible.builtin.apt:
         name: "{{ item }}"
         state: present
         update_cache: true
@@ -270,7 +268,7 @@
         - nfs-kernel-server
 
     - name: Create a directory for export
-      file:
+      ansible.builtin.file:
         path: /var/nfs_share
         state: directory
         owner: nobody
@@ -278,7 +276,7 @@
         mode: '0777'
 
     - name: Add thisdirectory to the NFS exports configuration
-      lineinfile:
+      ansible.builtin.lineinfile:
         path: /etc/exports
         line: '/var/nfs_share 192.168.122.0/255.255.255.0(rw,sync,no_subtree_check,no_root_squash)'
       notify:
@@ -286,6 +284,6 @@
   
   handlers:
     - name: apply & restart NFS
-      shell: |
+      ansible.builtin.shell: |
         set -euo pipefail
         exportfs -a && systemctl restart nfs-kernel-server
