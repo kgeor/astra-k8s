@@ -27,18 +27,18 @@
     #    upgrade: "full"
 
   tasks:
-    - name: Disable swap
-      ansible.builtin.shell: |
-        swapoff -a
-      when: ansible_swaptotal_mb > 0
+    # - name: Disable swap
+    #   ansible.builtin.shell: |
+    #     swapoff -a
+    #   when: ansible_swaptotal_mb > 0
 
-    - name: Disable swap mounting in fstab
-      ansible.builtin.replace:
-        path: /etc/fstab
-        regexp: '(^/.*swap.*)' #'^([^#].*?\sswap\s+sw\s+.*)$'
-        replace: '#\1'
+    # - name: Disable swap mounting in fstab
+    #   ansible.builtin.replace:
+    #     path: /etc/fstab
+    #     regexp: '(^/.*swap.*)' #'^([^#].*?\sswap\s+sw\s+.*)$'
+    #     replace: '#\1'
 
-    - name: Add auto load  for kernel modules needed by containerd
+    - name: Add auto load for kernel modules needed by containerd
       ansible.builtin.blockinfile:
         path: /etc/modules-load.d/containerd.conf
         create: true
@@ -192,6 +192,11 @@
             kind: KubeletConfiguration
             apiVersion: kubelet.config.k8s.io/v1beta1
             cgroupDriver: "systemd"
+            failSwapOn: false
+            featureGates:
+              NodeSwap: true
+            memorySwap:
+              swapBehavior: LimitedSwap
             ---
             apiVersion: kubeproxy.config.k8s.io/v1alpha1
             kind: KubeProxyConfiguration
