@@ -5,6 +5,7 @@
   vars:
     os_release: "debian bookworm"
     k8s_version: '1.31'
+    disable_swap: false
 
   pre_tasks:
     - name: Set hostname on your provisioned server
@@ -13,7 +14,7 @@
           ansible.builtin.hostname:
             name: "{{ inventory_hostname_short }}"
 
-        - name: Add FQDN to /etc/hosts
+        - name: Add hostname FQDN to /etc/hosts
           ansible.builtin.lineinfile:
             dest: /etc/hosts
             regexp: '^127\.0\.1\.1'
@@ -27,16 +28,19 @@
     #    upgrade: "full"
 
   tasks:
-    # - name: Disable swap
-    #   ansible.builtin.shell: |
-    #     swapoff -a
-    #   when: ansible_swaptotal_mb > 0
+    - name: Disable swap
+      block:
+      - name: Turn off swap right now
+        ansible.builtin.shell: |
+          swapoff -a
+        when: ansible_swaptotal_mb > 0
 
-    # - name: Disable swap mounting in fstab
-    #   ansible.builtin.replace:
-    #     path: /etc/fstab
-    #     regexp: '(^/.*swap.*)' #'^([^#].*?\sswap\s+sw\s+.*)$'
-    #     replace: '#\1'
+      - name: Disable swap mounting in fstab
+        ansible.builtin.replace:
+          path: /etc/fstab
+          regexp: '(^/.*swap.*)' #'^([^#].*?\sswap\s+sw\s+.*)$'
+          replace: '#\1'
+      when: disable_swap
 
     - name: Add auto load for kernel modules needed by containerd
       ansible.builtin.blockinfile:
@@ -95,25 +99,20 @@
         update_cache: yes
 
     - name: Install containerd as k8s container runtime
-      apt:
+      ansible.builtin.apt:
         name: containerd.io
         state: present
+      notify:
+        - create containerd config
 
-    - name: Enable the containerd service
-      ansible.builtin.service:
-        name: containerd 
-        enabled: yes
+    - name: Flush all triggered handlers now
+      ansible.builtin.meta: flush_handlers
 
     # - name: Prompt To Continue On To Configuring Worker Nodes
     #   ansible.builtin.pause:
     #     prompt: Press RETURN when you want to continue 
 
-    - name: Create default containerd configuration
-      ansible.builtin.shell: |
-        set -euo pipefail
-        /usr/bin/containerd config default | tee /etc/containerd/config.toml
-
-    - name: Customize created containerd configuration
+    - name: Customize containerd configuration
       ansible.builtin.replace:
         path: /etc/containerd/config.toml
         regexp: "{{ item.old }}"
@@ -124,7 +123,12 @@
         #- { old: 'systemd_cgroup = false', new: 'systemd_cgroup = true'}
       notify:
         - restart containerd
-    
+
+    - name: Enable the containerd service
+      ansible.builtin.service:
+        name: containerd 
+        enabled: yes    
+
     - name: Add Kubernetes repo apt-key
       ansible.builtin.get_url:
         url: "https://pkgs.k8s.io/core:/stable:/v{{ k8s_version }}/deb/Release.key"
@@ -165,7 +169,6 @@
         enabled: yes
 
     # - name: Reboot
-    #   run_once: true
     #   reboot:
     - name: Configure master node
       block:
@@ -192,11 +195,13 @@
             kind: KubeletConfiguration
             apiVersion: kubelet.config.k8s.io/v1beta1
             cgroupDriver: "systemd"
+            {% if disable_swap != true %}
             failSwapOn: false
             featureGates:
               NodeSwap: true
             memorySwap:
               swapBehavior: LimitedSwap
+            {% endif %}
             ---
             apiVersion: kubeproxy.config.k8s.io/v1alpha1
             kind: KubeProxyConfiguration
@@ -209,7 +214,7 @@
           owner: "{{ ansible_user }}"
           group: "{{ ansible_user }}"
           #mode: 0755
-      - name: Create tigera operator customization
+      - name: Create installation manifest for Tigera operator
         ansible.builtin.blockinfile:
           path: "/home/{{ ansible_user }}/k8s/calico.yaml"
           create: true
@@ -242,6 +247,11 @@
         - restart NetworkManager
 
   handlers:
+    - name: create containerd config
+      ansible.builtin.shell: |
+        set -euo pipefail
+        /usr/bin/containerd config default | tee /etc/containerd/config.toml
+      
     - name: restart containerd
       ansible.builtin.service:
         name: containerd
