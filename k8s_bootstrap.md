@@ -164,7 +164,7 @@ spec:
 EOF
 kubectl apply -f test-pvc.yaml
 ```
-Проверим состояние заявки PVC и информацию об имющихся томах PV в кластере (здесь мы воспользуемся кратким именем ресурса)
+Проверим состояние заявки PVC и информацию об имеющихся томах PV в кластере (здесь мы воспользуемся кратким именем ресурса)
 ```
 kubectl get pvc -A
 kubectl get pv
@@ -194,7 +194,7 @@ kubectl apply -f test-pv.yaml
 kubectl get pvc
 kubectl get pv
 ```
-Если все прошло как надо, то в выводе информации о PVC и PV статус обоих будет *Bound*, кроме того для тома PV в столбце CLAIM будет указано, с какой заявкой PVC он сцеплен.
+Если все прошло как надо, то в выводе информации о PVC и PV, статус обоих будет *Bound*, кроме того для тома PV в столбце CLAIM будет указано, с какой заявкой PVC он сцеплен.
 
 Для реализации варианта автоматизированного выделения томов PV для заявок PVC, нам потребуется установить внешний поставщик (Provisioner) для NFS (так как Kubernetes не имеет встроенного поставщика для NFS), который в директории, экспортируемой с сервера NFS, будет создавать по вложенной директории на каждый создаваемый им том PV.
 Установим, снова используя Helm, при установке также автоматически создадим для него класс хранилища, назначаемый по умолчанию (он используется, если желаемый класс не указан в заявке PVC)
@@ -244,6 +244,7 @@ kind: Pod
 apiVersion: v1
 metadata:
   name: nfs-pv-$method
+  namespace: default
 spec:
   containers:
   - name: nfs-test
@@ -269,3 +270,176 @@ done
 kubectl logs pods nfs-pv-...
 ```
 Полезно будет еще отметить, что поскольку контейнеры в этих двух подах были рассчитаны на выполнение конкретного действия и последующее завершение работы, то при просмотре их состояния, поды ```nfs-pv...``` будут в статусе *Completed*, что также говорит об успешном выполнении запущенной в контейнерах команды (код возврата 0). Если хотите окончательно убедиться в работоспособности хранилища, на хостовой ВМ внутри директории */srv/nfs_share* можете найти внутри созданной ранее вручную pv1 и автоматически созданной поставщиком директорий файл вида SUCCESS-... .
+
+Ненужные объекты, как например, отработавшие свою задачу поды *nfs-pv...*, или ненужные более PC, PVC  можно удалить из кластера с помощью команды kubectl delete, для практики удалите любой из подов *nfs-pv...*
+```
+kubectl delete pods <pod_name>
+```
+Имея теперь на руках готовый для развертывания приложений кластер, развернем в кластере первое приложение, оно Вам знакомо по курсу БД - PostgreSQL сервер. Перед началом развертывания доведем некоторую важную информацию:
++ PostgreSQL будет развернут на базе StatefulSet с 1 репликой, увеличивать число реплик в рамках данной  работы не требуется 
++ Запрещать желающим попробовать сделать работоспособное решение для нескольких реплик также не станем, но только с оговоркой, что делать его надо на основе самостоятельно созданных манифестов, без использования операторов и готовых чартов HA-деплоя
+
+Начнем развертывание PostgreSQL мы с того, что познакомимся еще с двумя типами ресурсов k8s и создадим по объекту для каждого, первый из них - ресурс типа *Secret*, предназначенный для хранения чувствительной информации в кластере, без необходимости указывать ее в открытом виде в конфигурациях других объектов, которым она нужна. В объект такого типа (*Secret*) запишем информацию о пользователе и пароле для PostgreSQL, это позволит в манифесте развертывания StatefulSet с PostgreSQL, не прописывать пароль и имя пользователя в открытом виде, а просто указать ссылку на созданный объект типа *Secret*.
+```
+kubectl create namespace postgres
+kubectl create -n postgres secret generic postgresql-secrets \
+    --from-literal=user=postgres \
+    --from-literal=password=pass
+kubectl label secret -n postgres postgresql-secrets app=postgres
+```
+*При необходимости администратор кластера всегда сможет вытащить информацию из секретов, вот так можно получить обратно заданный  на предыдущем шаге пароль ```kubectl get secret --namespace postgres postgresql-secrets -o jsonpath="{.data.password}" | base64 -d```*
+
+Вторым полезным и удобным объектом является *ConfigMap*, который обычно хранит в себе конфигурацию для развертываемых приложений. Его можно как создать с нуля манифестом, так и использовать в качестве основы существующий файл конфигурации приложения, указав это в специальном параметре при создании объекта через kubectl.
+```
+kubectl apply -f -<< EOF
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgresql-config
+  labels:
+    app: postgres
+data:
+  POSTGRES_DB: mydb_prod
+  PGDATA: /var/lib/postgresql/data/pgdata
+EOF
+```
+Ниже приведен набор манифестов для нескольких объектов k8s, создание которых необходимо для установки PostgreSQL в кластере, этот кусок кода Вам надо сохранить в отдельный yaml-файл, например *postgres.yaml* и затем применить его через команду ```kubectl apply``` 
+```
+cat << EOF > postgres.yaml
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgresql-pvc
+  namespace: postgres
+spec:
+  accessModes:
+    - ReadWriteOnce 
+  resources:
+    requests:
+      storage: 5Gi 
+  storageClassName: "nfs" 
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgresql
+  namespace: postgres
+  labels:
+    app: postgres
+spec:
+  selector:
+    app: postgres
+  ports:
+    - port: 5432 
+  clusterIP: None
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgresql
+  namespace: postgres
+spec:
+  serviceName: postgresql
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16
+          imagePullPolicy: "IfNotPresent"
+          env:
+            - name: POSTGRES_USER 
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql-secrets
+                  key: user
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgresql-secrets
+                  key: password
+            - configMapRef:
+              name: postgres-config
+
+          ports:
+            - containerPort: 5432
+              name: postgres
+          volumeMounts:
+            - name: postgres-pv-claim
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: postgresql-pv-claim
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        storageClassName: nfs
+        resources:
+          requests:
+            storage: 5Gi
+```
+Переходим к pgAdmin, создаем секрет с паролем
+```
+kubectl create -n postgres secret generic pgadmin-secrets \
+    --from-literal=pgadmin-pass=postgres
+```
+Создаем сборный манифест для развертывания
+```
+cat << EOF > pgadmin.yaml
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pgadmin
+spec:
+  selector:
+   matchLabels:
+    app: pgadmin
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: pgadmin
+    spec:
+      containers:
+
+        - name: pgadmin4
+          image: dpage/pgadmin4
+          imagePullPolicy: "IfNotPresent"
+          env:
+            - name: PGADMIN_DEFAULT_EMAIL
+              value: "admin@mpsu.stu"
+            - name: PGADMIN_DEFAULT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: pgadmin-secrets
+                  key: pgadmin-pass
+            - name: PGADMIN_PORT
+              value: "80"
+          ports:
+            - containerPort: 80
+              name: pgadminport
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: pgadmin
+  namespace: postgres
+  labels:
+    app: pgadmin
+spec:
+  selector:
+   app: pgadmin
+  type: NodePort
+  ports:
+   - port: 80
+     nodePort: 30200
+```
+Применяем ```kubectl apply -f pgadmin.yaml```. Получаем доступ с хоста, используя адрес мастер-узла и порт 30200
